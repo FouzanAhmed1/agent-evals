@@ -110,7 +110,56 @@ def run_case(
         latency_ms=latency_ms,
         attempts=attempts,
         error=None,
+        prompt_tokens=judge_result.prompt_tokens if judge_result else 0,
+        completion_tokens=judge_result.completion_tokens if judge_result else 0,
+        cost_usd=judge_result.cost_usd if judge_result else 0.0,
     )
+
+
+def _run_repeats(
+    case: EvalCase,
+    agent: AgentFn,
+    *,
+    retries: int,
+    judge_config: Optional[JudgeConfig],
+    judge_threshold: float,
+    repeat: int,
+) -> CaseResult:
+    """Run one case `repeat` times sequentially, then aggregate the results.
+
+    Repeats of the same case run sequentially in one pool task so ordering is
+    deterministic (important for flakiness detection on order-dependent agents).
+    """
+    n = max(1, repeat)
+    runs = [
+        run_case(
+            case,
+            agent,
+            retries=retries,
+            judge_config=judge_config,
+            judge_threshold=judge_threshold,
+        )
+        for _ in range(n)
+    ]
+    primary = runs[0]
+    if n == 1:
+        return primary
+
+    n_passed = sum(1 for r in runs if r.status == "pass")
+    pass_rate = round(n_passed / n, 3)
+    flaky = 0 < pass_rate < 1
+    if pass_rate == 1.0:
+        status = "pass"
+    elif all(r.status == "error" for r in runs):
+        status = "error"
+    else:
+        status = "fail"
+    # Keep the first run's details (output, checks, judge) as representative.
+    primary.status = status
+    primary.repeat_runs = n
+    primary.pass_rate = pass_rate
+    primary.flaky = flaky
+    return primary
 
 
 def run_suite(
@@ -123,18 +172,25 @@ def run_suite(
     retries: int = 2,
     judge_config: Optional[JudgeConfig] = None,
     judge_threshold: float = DEFAULT_JUDGE_THRESHOLD,
+    repeat: int = 1,
 ) -> SuiteResult:
-    """Run all cases concurrently with a thread pool, preserving case order."""
+    """Run all cases concurrently with a thread pool, preserving case order.
+
+    With repeat > 1 each case runs that many times (sequentially, to keep
+    ordering deterministic) and the result records the pass rate across
+    repeats plus a flaky flag when it is strictly between 0 and 1.
+    """
     ordered: List[Optional[CaseResult]] = [None] * len(cases)
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         future_to_index = {
             pool.submit(
-                run_case,
+                _run_repeats,
                 case,
                 agent,
                 retries=retries,
                 judge_config=judge_config,
                 judge_threshold=judge_threshold,
+                repeat=repeat,
             ): i
             for i, case in enumerate(cases)
         }

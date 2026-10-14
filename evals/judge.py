@@ -33,6 +33,24 @@ class JudgeConfig:
     model: str = "gpt-4o-mini"
 
 
+# Price per 1k tokens (input, output) in USD. Public list prices used only for
+# rough cost estimates in reports; not a billing source.
+_PRICE_PER_1K = {
+    "gpt-4o-mini": (0.00015, 0.0006),
+    "gpt-4o": (0.0025, 0.01),
+    "gpt-5-mini": (0.00025, 0.002),
+    "gpt-5": (0.00125, 0.01),
+}
+_DEFAULT_PRICE_PER_1K = (0.0025, 0.01)  # fallback estimate for unknown models
+_FAKE_PRICE_PER_1K = (0.0001, 0.0001)  # simulated rate for the fake judge
+
+
+def estimate_cost(model: str, prompt_tokens: int, completion_tokens: int) -> float:
+    """Rough USD cost for a judge call. Estimates only, not a billing source."""
+    in_rate, out_rate = _PRICE_PER_1K.get(model, _DEFAULT_PRICE_PER_1K)
+    return round((prompt_tokens * in_rate + completion_tokens * out_rate) / 1000.0, 6)
+
+
 def resolve_judge_config(fake: bool = False) -> Optional[JudgeConfig]:
     """Decide which judge to use.
 
@@ -119,12 +137,26 @@ def fake_judge_score(output: str, criteria: List[str], threshold: float) -> Judg
         score = round(10.0 * len(matched) / len(words), 1)
         scored.append(CriterionScore(criterion, score, matched, missing))
     overall = round(sum(c.score for c in scored) / len(scored), 1) if scored else 10.0
+
+    # Simulated token counts, deterministic in the inputs, so cost tracking
+    # works offline and stays stable in tests.
+    prompt_tokens = 20 + 2 * (
+        sum(len(c.split()) for c in criteria) + len(output.split())
+    )
+    completion_tokens = 10 + 2 * len(criteria)
+    in_rate, out_rate = _FAKE_PRICE_PER_1K
+    cost = round(
+        (prompt_tokens * in_rate + completion_tokens * out_rate) / 1000.0, 6
+    )
     return JudgeResult(
         mode="fake",
         score=overall,
         threshold=threshold,
         passed=overall >= threshold,
         criteria=scored,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=cost,
     )
 
 
@@ -191,12 +223,19 @@ def real_judge_score(
         score = max(0.0, min(10.0, round(raw_scores[i], 1)))
         scored.append(CriterionScore(criterion, score, [], []))
     overall = round(sum(c.score for c in scored) / len(scored), 1) if scored else 10.0
+
+    usage = payload.get("usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
     return JudgeResult(
         mode="real",
         score=overall,
         threshold=threshold,
         passed=overall >= threshold,
         criteria=scored,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        cost_usd=estimate_cost(config.model, prompt_tokens, completion_tokens),
     )
 
 
