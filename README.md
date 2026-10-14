@@ -20,8 +20,10 @@ suites/*.yaml  -->  loader  -->  runner  -->  results.json
 - **judge** (`evals/judge.py`): scores free-text criteria. Two modes:
   - `fake`: a deterministic keyword-coverage heuristic. Same input always gives the same score, zero network. Use this for tests, demos, and CI.
   - `real`: calls any OpenAI-compatible chat completions endpoint, configured through env vars.
-- **runner** (`evals/runner.py`): executes cases with a `ThreadPoolExecutor` (configurable workers), retries each case on exception (default 2 retries), records latency, then combines check results and the judge score into a pass/fail per case.
-- **report** (`evals/report.py`): renders one HTML file with inline CSS and JS. No CDN, no build, no external requests. Shows the pass-rate summary, a per-case table, and expandable details with input, output, and exactly which checks failed.
+- **runner** (`evals/runner.py`): executes cases with a `ThreadPoolExecutor` (configurable workers), retries each case on exception (default 2 retries), records latency, then combines check results and the judge score into a pass/fail per case. `--repeat N` runs each case N times to catch flakiness.
+- **report** (`evals/report.py`): renders one HTML file with inline CSS and JS. No CDN, no build, no external requests. Shows the pass-rate summary, cost and latency cards (mean/p50/p95, slowest cases), a per-case table with flaky badges, and expandable details with input, output, and exactly which checks failed. Also renders comparison reports from `evals compare`.
+- **compare** (`evals/compare.py`): diffs two `results.json` files into per-case score deltas (A minus B) with improved/regressed/unchanged/newly-passing/newly-failing classifications.
+- **markdown** (`evals/markdown.py`): PR-comment-ready Markdown summaries for runs and comparisons (`--format md`).
 
 ## Setup on a fresh machine
 
@@ -74,8 +76,52 @@ Useful flags:
 | `--fake-judge` | off | Use the offline deterministic judge |
 | `--no-judge` | off | Skip judge scoring entirely |
 | `--judge-threshold` | 6.0 | Default pass threshold when a case does not set its own |
+| `--repeat` | 1 | Run each case this many times to catch flakiness (see below) |
+| `--format` | `html` | `md` also writes a PR-comment-ready Markdown summary |
+| `--output` | none | Where to write the Markdown summary (`--format md`); defaults to the `.md` next to `--report` |
 
 The command exits 0 when every case passes, 1 otherwise, so it works in CI as-is.
+
+## Comparing runs
+
+Saved `results.json` files are comparable. Point the `compare` command at two of them (deltas are A minus B) and you get a per-case score delta table, sorted by biggest regression, plus counts of improved, regressed, unchanged, newly passing, and newly failing cases. Cases that only exist in one file are listed instead of dropped.
+
+```bash
+python -m evals compare run-a.json run-b.json --report compare.html
+```
+
+The compare command exits 1 when anything is newly failing, so it also works as a CI gate. Add `--format md` (with optional `--output compare.md`) and you get a Markdown version for a PR comment, with top regressions, top improvements, and the newly failing/passing lists.
+
+## Cost and latency tracking
+
+Every run already measured wall-clock latency per case; now it is reported properly and token usage is tracked alongside:
+
+- **Latency**: per-case `latency_ms` in `results.json`; the summary and report show mean, p50, and p95, plus a slowest-cases table.
+- **Tokens and cost**: when the judge runs, the runner records `prompt_tokens`, `completion_tokens`, and an estimated `cost_usd` per case, with totals in the summary. The real judge reads actual usage from the API response and prices it from a small built-in price table (rough estimates, not billing). The fake judge reports deterministic simulated counts, so cost tracking works offline and stays stable in tests.
+
+The report shows a P95 latency card and an estimated-cost card next to the pass-rate cards, and the run summary prints totals to the console.
+
+## Flakiness detection
+
+Some agents are nondeterministic. `--repeat N` runs every case N times (sequentially, so repeats are ordered deterministically) and records the pass rate across repeats:
+
+```bash
+python -m evals run --suite suites/support.yaml --agent demos:support_agent \
+  --fake-judge --repeat 5 --report report.html
+```
+
+A case whose pass rate is strictly between 0 and 1 is flagged **FLAKY**: it gets a distinct badge in the report table, its own section with a pass-rate distribution, and it counts against the run (the run fails unless every repeat passes). With the default `--repeat 1` nothing changes: no pass rates, no flaky section, same behavior as before.
+
+## Markdown export
+
+Both commands accept `--format md`, which writes a PR-comment-ready Markdown summary: the overall pass rate, total estimated cost, latency stats, the failing and flaky case lists with one-line reasons (and, for compare, the top regressions and improvements). `--report` still writes HTML; the Markdown goes to the `.md` next to it unless you pass `--output` to choose the path.
+
+```bash
+python -m evals run --suite suites/support.yaml --agent demos:support_agent \
+  --fake-judge --report report.html --format md        # writes report.md too
+
+python -m evals compare run-a.json run-b.json --format md --output pr-comment.md
+```
 
 With your own agent:
 
@@ -120,8 +166,10 @@ A case passes when every deterministic check passes **and** the judge score meet
   "timestamp": "2026-10-14T04:00:00+00:00",
   "judge_mode": "fake",
   "summary": {
-    "total": 5, "passed": 5, "failed": 0, "errors": 0,
-    "pass_rate": 100.0, "avg_latency_ms": 0.1
+    "total": 5, "passed": 5, "failed": 0, "errors": 0, "flaky": 0,
+    "pass_rate": 100.0, "avg_latency_ms": 0.1,
+    "mean_latency_ms": 0.1, "p50_latency_ms": 0.1, "p95_latency_ms": 0.2,
+    "total_tokens": 614, "total_cost_usd": 0.0001
   },
   "cases": [
     {
@@ -133,6 +181,7 @@ A case passes when every deterministic check passes **and** the judge score meet
       "checks_failed": [],
       "judge": {
         "mode": "fake", "score": 6.7, "threshold": 4.0, "passed": true,
+        "prompt_tokens": 120, "completion_tokens": 12, "cost_usd": 0.00002,
         "criteria": [
           {"criterion": "...", "score": 6.7,
            "matched_keywords": ["refund"], "missing_keywords": ["polite"]}
@@ -140,7 +189,9 @@ A case passes when every deterministic check passes **and** the judge score meet
       },
       "latency_ms": 0.2,
       "attempts": 1,
-      "error": null
+      "error": null,
+      "prompt_tokens": 120, "completion_tokens": 12, "cost_usd": 0.00002,
+      "repeat_runs": 1, "pass_rate": null, "flaky": false
     }
   ]
 }
