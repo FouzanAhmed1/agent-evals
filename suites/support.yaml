@@ -1,0 +1,50 @@
+name: customer-support
+cases:
+  - name: refund_policy
+    input: "Hi, I ordered headphones last month and they stopped working. How do I get a refund?"
+    rubric:
+      contains: ["refund", "30 days", "order number"]
+      not_contains: ["no refunds", "cannot help"]
+    judge:
+      criteria:
+        - "The response offers a refund within the 30-day policy and stays polite and helpful."
+      threshold: 4.0
+
+  - name: order_tracking
+    input: "Where is my order? The order number is 84721."
+    rubric:
+      contains: ["84721", "tracking"]
+      regex: ["order 84721"]
+    judge:
+      criteria:
+        - "Mentions order 84721 and includes a tracking link."
+      threshold: 4.0
+
+  - name: shipping_time
+    input: "How long will shipping take to Boston?"
+    rubric:
+      contains: ["3-5 business days"]
+      not_contains: ["we do not ship"]
+    judge:
+      criteria:
+        - "Gives the shipping time as 3-5 business days."
+      threshold: 4.0
+
+  - name: damaged_item
+    input: "My package arrived and the item inside is broken. What are my options?"
+    rubric:
+      contains: ["replacement", "refund"]
+    judge:
+      criteria:
+        - "The response offers a replacement or refund for the damaged item."
+      threshold: 4.0
+
+  - name: out_of_scope
+    input: "Can you help me file my taxes?"
+    rubric:
+      contains: ["only help with orders", "support"]
+      not_contains: ["refund"]
+    judge:
+      criteria:
+        - "The response redirects the user to order support."
+      threshold: 3.0

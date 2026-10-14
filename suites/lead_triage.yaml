@@ -1,0 +1,42 @@
+name: lead-triage
+cases:
+  - name: hot_ready_to_sign
+    input: "Hi, our budget is approved and we'd like to sign this week. Can someone call me today?"
+    rubric:
+      contains: ["Classification: HOT"]
+      regex: ['\bHOT\b']
+      not_contains: ["COLD"]
+    judge:
+      criteria:
+        - "The rationale references the lead's stated budget and timeline."
+      threshold: 4.0
+
+  - name: hot_urgent_deal
+    input: "Need 50 seats ASAP. Send me the contract and your best price."
+    rubric:
+      contains: ["HOT"]
+      regex: ['\bHOT\b']
+    judge:
+      criteria:
+        - "The rationale captures the urgency and deal size in the message."
+      threshold: 4.0
+
+  - name: warm_evaluating
+    input: "We're evaluating a few vendors for a CRM rollout next quarter. Could you send pricing?"
+    rubric:
+      contains: ["Classification: WARM"]
+      not_contains: ["HOT"]
+    judge:
+      criteria:
+        - "The rationale notes the lead is evaluating vendors without an immediate timeline."
+      threshold: 4.0
+
+  - name: cold_browsing
+    input: "Just browsing your site, not looking to buy anything right now."
+    rubric:
+      contains: ["Classification: COLD"]
+      not_contains: ["HOT"]
+    judge:
+      criteria:
+        - "The rationale explains why this lead is not sales-ready."
+      threshold: 4.0
